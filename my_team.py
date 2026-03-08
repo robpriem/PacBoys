@@ -1,280 +1,280 @@
-import random
-import util
 from capture_agents import CaptureAgent
 from game import Directions
-from util import nearest_point
 
 def create_team(first_index, second_index, is_red,
-                first='OffensiveMinimaxAgent', second='OffensiveMinimaxAgent', num_training=0):
+                first='OffensiveAgent', second='OffensiveAgent', num_training=0):
     return [eval(first)(first_index), eval(second)(second_index)]
 
+class OffensiveAgent(CaptureAgent):
 
-class OffensiveMinimaxAgent(CaptureAgent):
     def register_initial_state(self, game_state):
         super().register_initial_state(game_state)
+
         self.start = game_state.get_agent_position(self.index)
         self.boundary = self._compute_boundary_positions(game_state)
         self.boundary_home = min(
             self.boundary,
-            key=lambda p: abs(p[1] - (game_state.data.layout.height // 2))
-        )
-        self.search_depth = 2
+            key=lambda p: abs(p[1] - (game_state.data.layout.height // 2)))
+
+        self.search_depth = 5
+        self.min_max_depth = 3
+
         self.return_food_threshold = 5
+        self.close_quarters_distance = 5
+
         self.danger_dist = 3
         self.endgame_return_buffer = 35
+        self.visible_defenders_indices = []
 
     def choose_action(self, game_state):
-        my_state = game_state.get_agent_state(self.index)
-        my_pos = my_state.get_position()
+        return self.choose_action_offensive(game_state)
 
-        if my_pos is None:
-            return Directions.STOP
+    def choose_action_offensive(self, game_state):
 
-        visible_defenders = self._visible_defenders(game_state)
-        threatened = False
+        self.visible_defenders_indices = self.get_visible_opponents(game_state)
 
-        if visible_defenders:
-            dmin = min(self.get_maze_distance(my_pos, e.get_position()) for e in visible_defenders)
-            threatened = (dmin <= self.danger_dist)
+        enemies = self.get_opponents(game_state)
+        chasing_enemies = any(game_state.get_agent_state(i).scared_timer > 0 for i in enemies)
 
-        time_left = getattr(game_state.data, "timeleft", None)
-        carrying = my_state.num_carrying
+        def OffensiveEval_general(self, game_state):
+            my_state = game_state.get_agent_state(self.index)
+            my_pos = game_state.get_agent_position(self.index)
+            time_left = getattr(game_state.data, "timeleft", 0)
+            carrying = my_state.num_carrying
 
-        invaders = self._visible_invaders(game_state)
-
-        ############################## Act scared ###############
-        if my_state.scared_timer > 0:
-            return self._act_scared(game_state, invaders)
-
-        ############################### Return ###################
-        should_return = (
-                carrying >= self.return_food_threshold
-                or threatened
-                or (time_left is not None and time_left < self.endgame_return_buffer)
-        )
-        if should_return:
-            return self._move_towards(game_state, self.boundary_home)
-
-        ##################################### Mini-Max ###############@#####################
-        return self._alphabeta(game_state, self.search_depth, 0, float("-inf"), float("+inf"))
-
-    def _alphabeta(self, state, depth, agent_idx, alpha, beta):
-        # Terminal
-        if depth == 0 or state.is_over():
-            return self._eval_offense(state)
-
-        num_agents = state.get_num_agents()
-
-        # Compute next turn info FIRST (so we can "skip" safely if needed)
-        next_idx = (agent_idx + 1) % num_agents
-
-        # Decrement depth only when the turn order wraps back to us
-        next_depth = depth - 1 if next_idx == self.index else depth
-
-        # If we can't simulate this agent (e.g., unseen enemy => position None), skip their turn
-        st = state.get_agent_state(agent_idx)
-        if st is None or st.get_position() is None or getattr(st, "configuration", None) is None:
-            return self._alphabeta(state, next_depth, next_idx, alpha, beta)
-
-        actions = state.get_legal_actions(agent_idx)
-        if not actions:
-            return self._alphabeta(state, next_depth, next_idx, alpha, beta)
-
-        # Optional: avoid STOP everywhere to reduce loops
-
-        actions = [a for a in actions if a != Directions.STOP] or actions
-
-        # Team = MAX, Opponents = MIN (pure minimax => alpha-beta is valid)
-        if agent_idx in self.get_team(state):  # includes self.index
-            v = float("-inf")
-            for a in actions:
-                succ = state.generate_successor(agent_idx, a)
-                v = max(v, self._alphabeta(succ, next_depth, next_idx, alpha, beta))
-                alpha = max(alpha, v)
-                if alpha >= beta:
-                    break
-            return v
-        else:
-           v = float("inf")
-           for a in actions:
-            succ = state.generate_successor(agent_idx, a)
-            v = min(v, self._alphabeta(succ, next_depth, next_idx, alpha, beta))
-            beta = min(beta, v)
-            if alpha >= beta:
-                break
-            return v
-
-    # ----------------------------
-    # Evaluation (Offense Heuristic)
-    # ----------------------------
-
-    def _eval_offense(self, game_state):
-        ################# Offensive parameters ###########
-
-        my_state = game_state.get_agent_state(self.index)
-        my_pos = my_state.get_position()
-
-        if my_pos is None:
-            return float("-inf")
-
-        score = self.get_score(game_state)
-
-        # Food
-        food = self.get_food(game_state).as_list()
-        food_dist = min((self.get_maze_distance(my_pos, f) for f in food), default=0)
-
-        # Carrying incentive
-        carrying = my_state.num_carrying
-
-        # Return incentive grows with carrying and with time pressure
-        boundary_dist = min(self.get_maze_distance(my_pos, b) for b in self.boundary) if self.boundary else 0
-
-        time_left = getattr(game_state.data, "timeleft", None)
-        endgame_pressure = 0
-
-        if time_left is not None:
-            # small bump as time gets low
-            endgame_pressure = max(0, (self.endgame_return_buffer - time_left))
-
-        # Weighted sum offensive parameters
-        OffensiveScore = 0.0
-        OffensiveScore += 100 * score                           #score
-        OffensiveScore += 10 * carrying                         # value carrying (future score)
-        OffensiveScore += -2.5 * food_dist                       # move toward food
-        OffensiveScore += -0.8 * boundary_dist * (carrying > 0)  # when carrying, prefer edging home
-        OffensiveScore += -0.3 * endgame_pressure * boundary_dist
-
-        ############################## Defensive parameters #########################
-        DefensiveScore = score
-
-        # Visible defenders (ghosts) danger
-        defenders = self._visible_defenders(game_state)
-        danger_pen = 0
-
-        if defenders:
-            dmin = min(self.get_maze_distance(my_pos, d.get_position()) for d in defenders)
-
-            #If we can be eaten (they're not scared), avoid strongly when close
-
-            if any(d.scared_timer == 0 for d in defenders):
-                if dmin <= 2:
-                    danger_pen -= 2000
-                else:
-                    danger_pen -= 200 / float(dmin)
-            else:
-                # If defenders are scared, we can be bolder
-                danger_pen += 20 / float(max(1, dmin))
-
-        DefensiveScore += danger_pen
-
-        #aantal invaders
-        invaders = self._visible_invaders(game_state)
-        DefensiveScore -= 100 * len(invaders)
-
-        #als alle tegenstanders dood zijn
-        if len(invaders) == 0:
-            DefensiveScore -= min(self.get_maze_distance(my_pos, b) for b in self.boundary)
-
-        #minimum afstand tot invaders
-        if len(invaders) > 0:
-            d = min(self.get_maze_distance(my_pos, i.get_position()) for i in invaders)
-            DefensiveScore = 10 * d
-
-        return (0.75 * OffensiveScore + 0.25 * DefensiveScore)
+            score = self.get_score(game_state)
+            food = self.get_food(game_state).as_list()
+            food_dist = min((self.get_maze_distance(my_pos, f) for f in food), default=0)
+            boundary_dist = min(self.get_maze_distance(my_pos, b) for b in self.boundary) if self.boundary else 0
+            endgame_pressure = max(0, self.endgame_return_buffer - time_left)
+            food_left = len(self.get_food(game_state).as_list())
 
 
-    def _move_towards(self, game_state, target):
-        """Greedy step toward a target; filters moves that are obviously terrible."""
-        actions = game_state.get_legal_actions(self.index)
-        if not actions:
-            return Directions.STOP
+            # Weighted sum offensive parameters
+            offensivescore = 0.0
+            offensivescore += 100 * score                           #score
+            offensivescore += 10 * carrying                         # value carrying (future score)
+            offensivescore += -12.0 * food_dist                     # move toward food
+            offensivescore += -8.0 * boundary_dist * (carrying > 0)  # when carrying, prefer edging home
+            offensivescore += -0.3 * endgame_pressure * boundary_dist
+            offensivescore += -100 * food_left
 
-        # Prefer not to STOP if we can move
-        non_stop = [a for a in actions if a != Directions.STOP]
-        if non_stop:
-            actions = non_stop
 
-        best = None
-        best_d = float("inf")
-        for a in actions:
-            succ = game_state.generate_successor(self.index, a)
-            pos = succ.get_agent_state(self.index).get_position()
-            if pos is None:
-                continue
-            d = self.get_maze_distance(pos, target)
-            if d < best_d:
-                best_d, best = d, a
 
-        return best if best is not None else random.choice(actions)
+            return offensivescore
 
-    def _act_scared(self, game_state, invaders):
-        my_pos = game_state.get_agent_position(self.index)
-        cur_start_d = self.get_maze_distance(my_pos, self.start)
-        actions = list(game_state.get_legal_actions(self.index))
+        def OffensiveEval_normal(self, game_state):
+            d = 10.0 * self._get_min_distances_to_enemies(game_state)
+            return d
 
-        # Avoid crossing into enemy territory while scared.
-        safe_actions = []
-        for a in actions:
-            s = game_state.generate_successor(self.index, a)
-            if not s.get_agent_state(self.index).is_pacman:
-                safe_actions.append(a)
-        if len(safe_actions) > 0:
-            actions = safe_actions
+        def OffensiveEval_chase(self, game_state):
+            d = -10.0 * self._get_min_distances_to_enemies(game_state)
+            return d
 
-        # Precompute closest invader distance in current state.
-        inv_pos = [i.get_position() for i in invaders if i.get_position() is not None]
+        ############### THESE ARE THE NORMAL OFFENSIVE MODES OPERATIONS SO WE USE THE OffensiveEval_normal evaluation function here ###############
 
-        best_a, best_score = None, -10**9
-        for a in actions:
-            s = game_state.generate_successor(self.index, a)
-            pos = s.get_agent_position(self.index)
-            score = 0
+        def Offensive_Normal_min_max(self, game_state):
+            best_action = None
+            best_value = float("-inf")
 
-            # If invaders visible: prefer to keep distance while staying near midline.
-            if len(inv_pos) > 0:
-                d = min(self.get_maze_distance(pos, p) for p in inv_pos)
-                score += 4 * d
+            alpha = float("-inf")
+            beta = float("inf")
 
-            # Discourage moving toward start corner while scared.
-            start_d = self.get_maze_distance(pos, self.start)
-            score += self.start_avoid_weight * (start_d - cur_start_d)
+            actions = game_state.get_legal_actions(self.index)
+            actions = [a for a in actions if a != Directions.STOP] or actions
 
-            # Mild penalty for stopping unless it is genuinely best.
-            if a == Directions.STOP:
-                score -= 1
+            for action in actions:
+                successor = game_state.generate_successor(self.index, action)
 
-            if score > best_score:
-                best_score, best_a = score, a
+                eval_fn = lambda s: OffensiveEval_normal(self, s) + OffensiveEval_general(self, s)
+                next_agent = (self.index + 1) % game_state.get_num_agents()
+                value = self._alphabeta(successor, 0, next_agent, alpha, beta, eval_fn)
 
-        return best_a if best_a is not None else Directions.STOP
+                if value > best_value:
+                    best_value = value
+                    best_action = action
 
-    # ----------------------------
-    # Helpers
-    # ----------------------------
+                alpha = max(alpha, best_value)
 
-    def _visible_defenders(self, game_state):
-        """Visible opponents that are ghosts (i.e., defenders), with known positions."""
+            return best_action
+
+        def Offensive_Normal_Search(self, game_state):
+
+            def Offensive_Normal_Search_inner(self, game_state, depth):
+                if depth == self.search_depth:
+                    return OffensiveEval_general(self, game_state) + OffensiveEval_normal(self, game_state)
+
+                actions = game_state.get_legal_actions(self.index)
+                actions = [a for a in actions if a != Directions.STOP] or actions
+
+                values = [Offensive_Normal_Search_inner(self, game_state.generate_successor(self.index, action), depth + 1)
+                          for action in actions]
+
+                return max(values)
+
+            actions = game_state.get_legal_actions(self.index)
+            actions = [a for a in actions if a != Directions.STOP] or actions
+
+            best_action = max(actions,key=lambda action: Offensive_Normal_Search_inner(self,
+                                                                                      game_state.generate_successor(self.index, action),
+                                                                                      0))
+            return best_action
+
+        ############### THESE ARE THE CHASE OFFENSIVE MODES OPERATIONS (after eating a pellet) SO WE USE THE OffensiveEval_chase EVALUATION FUNCTION HERE ###############
+
+        def Offensive_Chase_min_max(self, game_state):
+            best_action = None
+            best_value = float("-inf")
+
+            alpha = float("-inf")
+            beta = float("inf")
+
+            actions = game_state.get_legal_actions(self.index)
+            actions = [a for a in actions if a != Directions.STOP] or actions
+
+            for action in actions:
+                successor = game_state.generate_successor(self.index, action)
+
+                eval_fn = lambda s: OffensiveEval_chase(self, s) + OffensiveEval_general(self, s)
+                next_agent = (self.index + 1) % game_state.get_num_agents()
+                value = self._alphabeta(successor, 0, next_agent, alpha, beta, eval_fn)
+
+                if value > best_value:
+                    best_value = value
+                    best_action = action
+
+                alpha = max(alpha, best_value)
+
+            return best_action
+
+        def Offensive_Chase_Search(self, game_state):
+
+            def Offensive_Chase_Search_inner(self, game_state, depth):
+                if depth == self.search_depth:
+                    return OffensiveEval_general(self, game_state) + OffensiveEval_chase(self, game_state)
+
+                actions = game_state.get_legal_actions(self.index)
+                actions = [a for a in actions if a != Directions.STOP] or actions
+
+                values = [Offensive_Chase_Search_inner(self, game_state.generate_successor(self.index, action), depth + 1)
+                          for action in actions]
+
+                return max(values)
+
+            actions = game_state.get_legal_actions(self.index)
+            actions = [a for a in actions if a != Directions.STOP] or actions
+
+            best_action = max(actions,key=lambda action: Offensive_Chase_Search_inner(self,
+                                                                                 game_state.generate_successor(self.index, action),
+                                                                                0))
+            return best_action
+
+
+        ######## "Statemachine" voor offensive mode #######
+        if chasing_enemies and self.visible_defenders_indices == []:
+            return Offensive_Chase_Search(self, game_state)
+        elif chasing_enemies and not self.visible_defenders_indices == []:
+            return Offensive_Chase_min_max(self, game_state)
+        elif not chasing_enemies and self.visible_defenders_indices == []:
+            return Offensive_Normal_Search(self, game_state)
+        elif not chasing_enemies and not self.visible_defenders_indices == []:
+            return Offensive_Normal_min_max(self, game_state)
+
+
+    ####################################################### HELPER FUNCTIONS ########################################################
+
+    def get_visible_opponents(self, game_state):
         res = []
         for i in self.get_opponents(game_state):
             st = game_state.get_agent_state(i)
             pos = st.get_position()
             if pos is None:
                 continue
-            # A defender is a ghost: not pacman (on their home side)
             if not st.is_pacman:
-                res.append(st)
+                res.append(i)
         return res
 
-    def _visible_invaders(self, game_state):
-        """Visible opponents that are Pacman (invading our side), with known positions."""
-        res = []
-        for i in self.get_opponents(game_state):
-            st = game_state.get_agent_state(i)
-            if st.get_position() is None:
+    def get_indices_involved_in_close_quarters(self, game_state):
+        my_pos = game_state.get_agent_position(self.index)
+        involved = [self.index]
+
+        if my_pos is None:
+            return involved
+
+        for m in self.get_team(game_state):
+            if m == self.index:
                 continue
-            if st.is_pacman:
-                res.append(st)
-        return res
+            pos = game_state.get_agent_position(m)
+            if pos is None:
+                continue
+            if self.distancer.get_distance(pos, my_pos) < self.close_quarters_distance:
+                involved.append(m)
+
+        for i in self.get_visible_opponents(game_state):
+            pos = game_state.get_agent_position(i)
+            if pos is None:
+                continue
+            if self.distancer.get_distance(pos, my_pos) < self.close_quarters_distance:
+                involved.append(i)
+
+        return involved
+
+    def _alphabeta(self, state, depth, agent_idx, alpha, beta, eval_function):
+        """
+        General alpha-beta for multi-agent turn-taking.
+        """
+
+        if depth >= self.min_max_depth or state.is_over():
+            return eval_function(state)
+
+        agent_state = state.get_agent_state(agent_idx)
+        if agent_state is None or agent_state.configuration is None:
+            return eval_function(state)
+
+        legal_actions = state.get_legal_actions(agent_idx)
+        if not legal_actions:
+            return eval_function(state)
+
+        involved = self.get_indices_involved_in_close_quarters(state)
+
+        num_agents = state.get_num_agents()
+
+        next_agent = (agent_idx + 1) % num_agents
+        while next_agent not in involved:
+            next_agent = (next_agent + 1) % num_agents
+
+        next_depth = depth + 1 if next_agent == self.index else depth
+
+        if agent_idx in self.get_team(state):
+
+            value = float("-inf")
+            for action in legal_actions:
+                successor = state.generate_successor(agent_idx, action)
+                value = max(
+                    value,
+                    self._alphabeta(successor, next_depth, next_agent, alpha, beta, eval_function)
+                )
+                if value >= beta:
+                    return value  # beta cutoff
+
+                alpha = max(alpha, value)
+
+            return value
+
+        elif agent_idx in self.get_opponents(state):
+            value = float("+inf")
+            for action in legal_actions:
+                successor = state.generate_successor(agent_idx, action)
+
+                value = min(
+                    value,
+                    self._alphabeta(successor, next_depth, next_agent, alpha, beta, eval_function)
+                )
+                if value <= alpha:
+                    return value  # alpha cutoff
+                beta = min(beta, value)
+
+            return value
 
     def _compute_boundary_positions(self, game_state):
         walls = game_state.get_walls()
@@ -291,13 +291,16 @@ class OffensiveMinimaxAgent(CaptureAgent):
         for y in range(height):
             if not walls[boundary_x][y]:
                 boundary.append((boundary_x, y))
+
         return boundary
+    def _get_min_distances_to_enemies(self, game_state):
+        agent_distances = game_state.get_agent_distances()
+        visible_opponents = self.get_visible_opponents(game_state)
+        if visible_opponents:
+            return min(self.get_maze_distance(game_state.get_agent_position(self.index), game_state.get_agent_position(i)) for i in visible_opponents)
+        if agent_distances is not None:
+            return min(agent_distances[i] for i in self.get_opponents(game_state))
+        return 0
 
-    def _next_agent(self, agent_idx, game_state):
-        return (agent_idx + 1) % game_state.get_num_agents()
 
 
-    # Optional: update your create_team defaults to use the new class:
-    # def create_team(first_index, second_index, is_red,
-    #                 first='OffensiveMinimaxAgent', second='DefensiveMinimaxAgent', num_training=0):
-    #     return [eval(first)(first_index), eval(second)(second_index)]
