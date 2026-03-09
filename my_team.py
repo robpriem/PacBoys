@@ -54,11 +54,11 @@ class OffensiveAgent(CaptureAgent):
 
             # Weighted sum offensive parameters
             offensivescore = 0.0
-            offensivescore += 100 * score                           #score
+            offensivescore += 60 * score                           #score
             offensivescore += 25 * carrying                         # value carrying (future score)
             offensivescore += -5 * food_dist_min                     # move toward food
             offensivescore += -7* food_dist
-            offensivescore += -50 * boundary_dist * (carrying > 0)  # when carrying, prefer edging home
+            offensivescore += -75 * boundary_dist * (carrying > 0)  # when carrying, prefer edging home
             offensivescore += -0.3 * endgame_pressure * boundary_dist
             offensivescore += -20 * food_left
             offensivescore += 28 * team_dist
@@ -71,12 +71,16 @@ class OffensiveAgent(CaptureAgent):
             return d
 
         def OffensiveEval_chase(self, game_state):
-            d = -25.0 * self._get_min_distances_to_enemies(game_state)
-            return d
+            chase_score = 0.0
+
+            chase_score += -10.0 * self._get_min_distances_to_enemies(game_state)
+            chase_score += -15 * game_state.get_num_agents()
+
+            return chase_score
 
         ############### THESE ARE THE NORMAL OFFENSIVE MODES OPERATIONS SO WE USE THE OffensiveEval_normal evaluation function here ###############
 
-        def Offensive_Normal_min_max(self, game_state):
+        def Offensive_min_max(self, game_state, eval_function):
             best_action = None
             best_value = float("-inf")
 
@@ -88,10 +92,8 @@ class OffensiveAgent(CaptureAgent):
 
             for action in actions:
                 successor = game_state.generate_successor(self.index, action)
-
-                eval_fn = lambda s: OffensiveEval_normal(self, s) + OffensiveEval_general(self, s)
                 next_agent = (self.index + 1) % game_state.get_num_agents()
-                value = self._alphabeta(successor, 0, next_agent, alpha, beta, eval_fn)
+                value = self._alphabeta(successor, 0, next_agent, alpha, beta, eval_function)
 
                 if value > best_value:
                     best_value = value
@@ -101,7 +103,7 @@ class OffensiveAgent(CaptureAgent):
 
             return best_action
 
-        def Offensive_Normal_Search(self, game_state):
+        def Offensive_Search(self, game_state, eval_function):
 
             def Offensive_Normal_Search_inner(self, game_state, depth, acc):
                 if depth == self.search_depth:
@@ -111,7 +113,7 @@ class OffensiveAgent(CaptureAgent):
                 actions = [a for a in actions if a != Directions.STOP] or actions
 
                 succesor_states = [game_state.generate_successor(self.index, action) for action in actions]
-                values = [Offensive_Normal_Search_inner(self, state, depth + 1, acc + OffensiveEval_general(self, state) + OffensiveEval_normal(self, state))
+                values = [Offensive_Normal_Search_inner(self, state, depth + 1, acc + eval_function(game_state))
                           for state in succesor_states]
 
                 return max(values)
@@ -124,66 +126,16 @@ class OffensiveAgent(CaptureAgent):
                                                                                       0, 0))
             return best_action
 
-        ############### THESE ARE THE CHASE OFFENSIVE MODES OPERATIONS (after eating a pellet) SO WE USE THE OffensiveEval_chase EVALUATION FUNCTION HERE ###############
-
-        def Offensive_Chase_min_max(self, game_state):
-            best_action = None
-            best_value = float("-inf")
-
-            alpha = float("-inf")
-            beta = float("inf")
-
-            actions = game_state.get_legal_actions(self.index)
-            actions = [a for a in actions if a != Directions.STOP] or actions
-
-            for action in actions:
-                successor = game_state.generate_successor(self.index, action)
-
-                eval_fn = lambda s: OffensiveEval_chase(self, s) + OffensiveEval_general(self, s)
-                next_agent = (self.index + 1) % game_state.get_num_agents()
-                value = self._alphabeta(successor, 0, next_agent, alpha, beta, eval_fn)
-
-                if value > best_value:
-                    best_value = value
-                    best_action = action
-
-                alpha = max(alpha, best_value)
-
-            return best_action
-
-        def Offensive_Chase_Search(self, game_state):
-
-            def Offensive_Chase_Search_inner(self, game_state, depth, acc):
-                if depth >= self.search_depth:
-                    return acc
-
-                actions = game_state.get_legal_actions(self.index)
-                actions = [a for a in actions if a != Directions.STOP] or actions
-
-                succesor_states = [game_state.generate_successor(self.index, action) for action in actions]
-                values = [Offensive_Chase_Search_inner(self, state, depth + 1, acc + OffensiveEval_general(self, state) + OffensiveEval_chase(self, state))
-                          for state in succesor_states]
-
-                return max(values)
-
-            actions = game_state.get_legal_actions(self.index)
-            actions = [a for a in actions if a != Directions.STOP] or actions
-
-            best_action = max(actions,key=lambda action: Offensive_Chase_Search_inner(self,
-                                                                                 game_state.generate_successor(self.index, action),
-                                                                                0, 0))
-            return best_action
-
 
         ######## "Statemachine" voor offensive mode #######
         if chasing_enemies and self.visible_defenders_indices == []:
-            return Offensive_Chase_Search(self, game_state)
+            return Offensive_Search(self, game_state, lambda s: OffensiveEval_chase(self, s) + OffensiveEval_general(self, s))
         elif chasing_enemies and not self.visible_defenders_indices == []:
-            return Offensive_Chase_min_max(self, game_state)
+            return Offensive_min_max(self, game_state, lambda s: OffensiveEval_chase(self, s) + OffensiveEval_general(self, s))
         elif not chasing_enemies and self.visible_defenders_indices == []:
-            return Offensive_Normal_Search(self, game_state)
+            return Offensive_Search(self, game_state, lambda s: OffensiveEval_normal(self, s) + OffensiveEval_general(self, s))
         elif not chasing_enemies and not self.visible_defenders_indices == []:
-            return Offensive_Normal_min_max(self, game_state)
+            return Offensive_min_max(self, game_state,lambda s: OffensiveEval_normal(self, s) + OffensiveEval_general(self, s))
 
 
     ####################################################### HELPER FUNCTIONS ########################################################
