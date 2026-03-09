@@ -44,31 +44,34 @@ class OffensiveAgent(CaptureAgent):
 
             score = self.get_score(game_state)
             food = self.get_food(game_state).as_list()
-            food_dist = min((self.get_maze_distance(my_pos, f) for f in food), default=0)
+            food_dist_min = min((self.get_maze_distance(my_pos, f) for f in food), default=0)
+            food_dist = sum((self.get_maze_distance(my_pos, f) for f in food))
             boundary_dist = min(self.get_maze_distance(my_pos, b) for b in self.boundary) if self.boundary else 0
             endgame_pressure = max(0, self.endgame_return_buffer - time_left)
             food_left = len(self.get_food(game_state).as_list())
+            team_dist = self._get_distance_to_closest_teammate(game_state)
 
 
             # Weighted sum offensive parameters
             offensivescore = 0.0
             offensivescore += 100 * score                           #score
-            offensivescore += 10 * carrying                         # value carrying (future score)
-            offensivescore += -12.0 * food_dist                     # move toward food
-            offensivescore += -8.0 * boundary_dist * (carrying > 0)  # when carrying, prefer edging home
+            offensivescore += 25 * carrying                         # value carrying (future score)
+            offensivescore += -5 * food_dist_min                     # move toward food
+            offensivescore += -7* food_dist
+            offensivescore += -50 * boundary_dist * (carrying > 0)  # when carrying, prefer edging home
             offensivescore += -0.3 * endgame_pressure * boundary_dist
-            offensivescore += -100 * food_left
-
+            offensivescore += -20 * food_left
+            offensivescore += 28 * team_dist
 
 
             return offensivescore
 
         def OffensiveEval_normal(self, game_state):
-            d = 10.0 * self._get_min_distances_to_enemies(game_state)
+            d = 20.0 * self._get_min_distances_to_enemies(game_state)
             return d
 
         def OffensiveEval_chase(self, game_state):
-            d = -10.0 * self._get_min_distances_to_enemies(game_state)
+            d = -25.0 * self._get_min_distances_to_enemies(game_state)
             return d
 
         ############### THESE ARE THE NORMAL OFFENSIVE MODES OPERATIONS SO WE USE THE OffensiveEval_normal evaluation function here ###############
@@ -100,15 +103,16 @@ class OffensiveAgent(CaptureAgent):
 
         def Offensive_Normal_Search(self, game_state):
 
-            def Offensive_Normal_Search_inner(self, game_state, depth):
+            def Offensive_Normal_Search_inner(self, game_state, depth, acc):
                 if depth == self.search_depth:
-                    return OffensiveEval_general(self, game_state) + OffensiveEval_normal(self, game_state)
+                    return acc
 
                 actions = game_state.get_legal_actions(self.index)
                 actions = [a for a in actions if a != Directions.STOP] or actions
 
-                values = [Offensive_Normal_Search_inner(self, game_state.generate_successor(self.index, action), depth + 1)
-                          for action in actions]
+                succesor_states = [game_state.generate_successor(self.index, action) for action in actions]
+                values = [Offensive_Normal_Search_inner(self, state, depth + 1, acc + OffensiveEval_general(self, state) + OffensiveEval_normal(self, state))
+                          for state in succesor_states]
 
                 return max(values)
 
@@ -117,7 +121,7 @@ class OffensiveAgent(CaptureAgent):
 
             best_action = max(actions,key=lambda action: Offensive_Normal_Search_inner(self,
                                                                                       game_state.generate_successor(self.index, action),
-                                                                                      0))
+                                                                                      0, 0))
             return best_action
 
         ############### THESE ARE THE CHASE OFFENSIVE MODES OPERATIONS (after eating a pellet) SO WE USE THE OffensiveEval_chase EVALUATION FUNCTION HERE ###############
@@ -149,15 +153,16 @@ class OffensiveAgent(CaptureAgent):
 
         def Offensive_Chase_Search(self, game_state):
 
-            def Offensive_Chase_Search_inner(self, game_state, depth):
-                if depth == self.search_depth:
-                    return OffensiveEval_general(self, game_state) + OffensiveEval_chase(self, game_state)
+            def Offensive_Chase_Search_inner(self, game_state, depth, acc):
+                if depth >= self.search_depth:
+                    return acc
 
                 actions = game_state.get_legal_actions(self.index)
                 actions = [a for a in actions if a != Directions.STOP] or actions
 
-                values = [Offensive_Chase_Search_inner(self, game_state.generate_successor(self.index, action), depth + 1)
-                          for action in actions]
+                succesor_states = [game_state.generate_successor(self.index, action) for action in actions]
+                values = [Offensive_Chase_Search_inner(self, state, depth + 1, acc + OffensiveEval_general(self, state) + OffensiveEval_chase(self, state))
+                          for state in succesor_states]
 
                 return max(values)
 
@@ -166,7 +171,7 @@ class OffensiveAgent(CaptureAgent):
 
             best_action = max(actions,key=lambda action: Offensive_Chase_Search_inner(self,
                                                                                  game_state.generate_successor(self.index, action),
-                                                                                0))
+                                                                                0, 0))
             return best_action
 
 
@@ -193,7 +198,6 @@ class OffensiveAgent(CaptureAgent):
             if not st.is_pacman:
                 res.append(i)
         return res
-
     def get_indices_involved_in_close_quarters(self, game_state):
         my_pos = game_state.get_agent_position(self.index)
         involved = [self.index]
@@ -218,7 +222,6 @@ class OffensiveAgent(CaptureAgent):
                 involved.append(i)
 
         return involved
-
     def _alphabeta(self, state, depth, agent_idx, alpha, beta, eval_function):
         """
         General alpha-beta for multi-agent turn-taking.
@@ -275,7 +278,6 @@ class OffensiveAgent(CaptureAgent):
                 beta = min(beta, value)
 
             return value
-
     def _compute_boundary_positions(self, game_state):
         walls = game_state.get_walls()
         width = game_state.data.layout.width
@@ -301,6 +303,27 @@ class OffensiveAgent(CaptureAgent):
         if agent_distances is not None:
             return min(agent_distances[i] for i in self.get_opponents(game_state))
         return 0
+    def _get_distance_to_closest_teammate(self, game_state):
+        my_pos = game_state.get_agent_position(self.index)
 
+        if my_pos is None:
+            return 0
+
+        teammate_distances = []
+
+        for teammate in self.get_team(game_state):
+            if teammate == self.index:
+                continue
+
+            pos = game_state.get_agent_position(teammate)
+            if pos is None:
+                continue
+
+            teammate_distances.append(self.get_maze_distance(my_pos, pos))
+
+        if teammate_distances:
+            return min(teammate_distances)
+
+        return 0
 
 
