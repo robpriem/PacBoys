@@ -42,10 +42,12 @@ class OffensiveAgent(CaptureAgent):
             time_left = getattr(game_state.data, "timeleft", 0)
             carrying = my_state.num_carrying
 
+
             score = self.get_score(game_state)
             food = self.get_food(game_state).as_list()
             food_dist_min = min((self.get_maze_distance(my_pos, f) for f in food), default=0)
-            food_dist = sum((self.get_maze_distance(my_pos, f) for f in food))
+            food_dst = [self.get_maze_distance(my_pos, f) for f in food]
+            food_dst_avg = sum(food_dst) / len(food_dst)
             boundary_dist = min(self.get_maze_distance(my_pos, b) for b in self.boundary) if self.boundary else 0
             endgame_pressure = max(0, self.endgame_return_buffer - time_left)
             food_left = len(self.get_food(game_state).as_list())
@@ -56,8 +58,7 @@ class OffensiveAgent(CaptureAgent):
             offensivescore = 0.0
             offensivescore += 60 * score                           #score
             offensivescore += 25 * carrying                         # value carrying (future score)
-            offensivescore += -5 * food_dist_min                     # move toward food
-            offensivescore += -7* food_dist
+            offensivescore += -7 * food_dist_min
             offensivescore += -75 * boundary_dist * (carrying > 0)  # when carrying, prefer edging home
             offensivescore += -0.3 * endgame_pressure * boundary_dist
             offensivescore += -20 * food_left
@@ -78,7 +79,7 @@ class OffensiveAgent(CaptureAgent):
 
             return chase_score
 
-        ############### THESE ARE THE NORMAL OFFENSIVE MODES OPERATIONS SO WE USE THE OffensiveEval_normal evaluation function here ###############
+        ############### NORMAL SEARCH AND MIN-MAX SEARCH ###############
 
         def Offensive_min_max(self, game_state, eval_function):
             best_action = None
